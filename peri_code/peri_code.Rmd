@@ -1,0 +1,1496 @@
+---
+title: "peri code"
+output: html_notebook
+---
+# Set up
+## Load libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(naniar)
+library(ggplot2)
+library(ggimage)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(Hmisc)
+library(janitor)
+```
+
+## Set user inputs
+```{r user inputs}
+### enter the csv name for the tracking data
+tracking_file <- "{your file name}"
+
+## enter the csv name for the visit dates
+visit_file <- "{your file name}"
+
+## how many visits?
+num_visits <- 4
+```
+
+## Import the data
+```{r import data}
+tracking_data <- read.csv(paste0("./data/",tracking_file), header = T, check.names = T)
+visits <- read.csv(paste0("./data/",visit_file), header = T, check.names = T)
+```
+
+## Prep an empty dataframe
+```{r create an empty dataframe}
+extracted_stages <- rep(0,8)
+dim(extracted_stages) <- c(1,8)
+colnames(extracted_stages) <- c("SID", "V1_stage", "V2_stage", "V3_stage", "V4_stage", "weeks_enrolled", "actual_weeks_tracked", "completion_rate")
+extracted_stages <- data.frame(extracted_stages)
+```
+
+## Load the functions
+```{r cleaning functions}
+filter_SID <- function(x, data) {
+  #this function creates a new data for a given SID
+ # assign(paste0("data_",x), data[data$SID == x,])
+  data <- data %>% filter(SID == x)
+  data <- data[order(data$EndDate_date),]
+}
+
+
+check_duplicates <- function(data) {
+  # this function checks the SID-filtered dataframe for duplicate responses
+   # data <- data %>% mutate(dup_flag = n() > 1, .after = EndDate_date)
+  data %>% filter(dup_flag == TRUE)
+}
+
+# order_surveydate <- function(data) {
+#   # this function reorders the SID-filtered dataframe by survey date
+#   data <- data[order(data$EndDate_date),]
+# }  
+
+check_wednesdays <- function(data) {
+  # this function checks for non-wednesday responses
+  data <- data %>% 
+    mutate(Wednesday = case_when(
+      weekdays(EndDate_date) == "Wednesday" ~ TRUE, 
+      TRUE ~ FALSE), .after = EndDate_date)
+  data %>%
+    filter(Wednesday == FALSE)
+}
+  
+
+check_missing <- function(data) {
+  # this function checks to see if there are missing responses, i.e., the interval between EndDate_date is n*7 (where n >1)
+  #data <- data[order(data$EndDate_date),]
+  data <- data %>%
+    mutate(Wednesday = case_when(
+      weekdays(EndDate_date) == "Wednesday" ~ TRUE, 
+      TRUE ~ FALSE), .after = EndDate_date) %>%
+    mutate(numdays_apart = EndDate_date - lag(EndDate_date), .after = Wednesday) %>%
+    mutate(numdays_apart_d = as.numeric(numdays_apart, units = "days"), .after = numdays_apart)
+  data %>%
+    filter(numdays_apart_d > 7)
+  #data
+}
+
+mark_missing <- function(data) {
+  data <- data[order(data$EndDate_date),]
+  data %>%
+    mutate(Wednesday = case_when(
+      weekdays(EndDate_date) == "Wednesday" ~ TRUE, 
+      TRUE ~ FALSE), .after = EndDate_date) %>%
+    mutate(numdays_apart = EndDate_date - lag(EndDate_date), .after = Wednesday) %>%
+    mutate(numdays_apart_d = as.numeric(numdays_apart, units = "days"), .after = numdays_apart) %>%
+    mutate(missing_flag = case_when(
+      numdays_apart_d > 7 ~ 1,
+      TRUE ~ 0)
+    )
+}
+
+count_weeks <- function(data) {
+  nrow(data)
+}
+```
+
+```{r staging functions}
+convert_weekly_to_daily <- function(data) {
+  data %>%
+    pivot_longer(
+      cols = starts_with("bleeding_days_"),
+      names_to = "bleeding_day_num",
+      names_prefix = "bleeding_days_",
+      values_to = "bleeding"
+    ) %>%
+    mutate(across(bleeding_day_num, as.integer))
+}
+
+generate_bleeding_dates <- function(data) {
+  data$bleedingDate <- data$EndDate_date - data$bleeding_day_num
+  data <- data[order(data$bleedingDate), ]
+  data <- data[order(data$EndDate_date), ]
+  data %>%
+    mutate(bleeding_thatday = case_when(bleeding < 0 ~ 1, bleeding == 0 ~ 0, TRUE ~ NA))
+}
+
+id_bleeding_start <- function(data) {
+  rowN <- data %>%
+    mutate(lead_bleeding_thatday = lead(bleeding_thatday)) %>%
+    mutate(lag1_bleeding_thatday = lag(bleeding_thatday, n = 1)) %>%
+    mutate(lag2_bleeding_thatday = lag(bleeding_thatday, n = 2)) %>%
+    mutate(row_number = row_number()) %>%
+    filter(bleeding_thatday == 1 &
+             lag1_bleeding_thatday == 0 &
+             lag2_bleeding_thatday == 0) %>%
+    dplyr::slice(1) %>%
+    pull(row_number)
+  data$bleeding_day1 <- NA
+  for (r in rowN:(nrow(data))) {
+    if (data[r, "bleeding_thatday"] == 0) {
+      data[r, "bleeding_day1"] <- 0
+    } else if (data[r, "bleeding_thatday"] == 1) {
+      if (all(data[c((r - 2):(r - 1)), "bleeding_thatday"] == 0, na.rm = T)) {
+        data[r, "bleeding_day1"] <- 1
+      } else if (any(data[c((r - 2):(r - 1)), "bleeding_thatday"] == 1, na.rm = T)) {
+        data[r, "bleeding_day1"] <- 0
+      } else {
+        data[r, "bleeding_day1"] <- 0
+      }
+    }
+  }
+  data
+}
+
+count_days <- function(data) {
+  data$day <- NA
+  for (i in 1:nrow(data)) {
+    if (is.na(data[i, 'bleeding_day1'])) {
+      data[i, 'day'] <- NA_integer_
+    } else if (data[i, 'bleeding_day1'] == 1) {
+      data[i, 'day'] <- 1
+    } else {
+      data[i, 'day'] <- data[i - 1, 'day'] + 1
+    }
+  }
+  data
+}
+
+
+count_bleeding_cycles <- function(data) {
+  data$cyclenumber_initial <- NA
+  n = 1
+  for (i in 1:nrow(data)) {
+    if (is.na(data[i, "day"])) {
+      data[i, "cyclenumber_initial"] <- NA
+    } else if ((data[i, "day"] == 1 &
+                is.na(data[i - 1, "day"])) |
+               (data[i, "day"] - data[i - 1, "day"] == 1)) {
+      data[i, "cyclenumber_initial"] <- n
+    } else if (data[i, "day"] <= data[i - 1, "day"]) {
+      n = n + 1
+      data[i, "cyclenumber_initial"] <- n
+    }
+  }
+  #censor cycles with missing data and recount cycle number
+  data$cyclenumber_final <- NA_integer_
+  data$cyclenumber_notes <- NA
+  n_cencycle <- 0
+  curr_cycle <- 1
+  cen <- "missing data within this cycle; not counting"
+  tmp <- data %>%
+    dplyr::select(c(bleedingDate, missing_flag, cyclenumber_initial))
+  for (x in 1:max(data$cyclenumber_initial, na.rm = T)) {
+    # censor cycles with missing data, then apply curr cycle count
+    if (all(tmp$missing_flag == 0)) {
+      data$cyclenumber_final <- data$cyclenumber_initial
+    }
+    if (any(tmp[tmp$cyclenumber_initial == x, "missing_flag"] == 1, na.rm = T)) {
+      data[!is.na(data$cyclenumber_initial) &
+             data$cyclenumber_initial == x, "cyclenumber_notes"] <- cen
+      data[!is.na(data$cyclenumber_initial) &
+             data$cyclenumber_initial == x, "cyclenumber_final"] <- rep(NA, nrow(data[data$cyclenumber_initial == x, ]))
+    } else if (all(tmp[tmp$cyclenumber_initial == x, "missing_flag"] == 0, na.rm = T)) {
+      data[!is.na(data$cyclenumber_initial) &
+             data$cyclenumber_initial == x, "cyclenumber_final"] <- curr_cycle
+      curr_cycle = curr_cycle + 1
+    }
+  }
+  data
+}
+
+calc_cycle_length <- function(data) {
+  # this function determines the ‘cyclelength’ (local maxima ‘cd’)
+  # cycle length = highest number before the subsequent bleeding_day1
+  data$cyclelength <- NA
+  library(splus2R)
+  length <- NA
+  data$peak <- peaks(data$day, span = 3) #found the peaks
+  for (x in 1:max(data$cyclenumber_initial, na.rm = T) - 1) {
+    length <- data[!is.na(data$cyclenumber_initial) &
+                     data$cyclenumber_initial == x &
+                     data$peak == TRUE, 'day']
+    data[!is.na(data$cyclenumber_initial) &
+           data$cyclenumber_initial == x, 'cyclelength'] <- length
+  }
+  data
+}
+
+compare_cycle_lengths <- function(data) {
+  data$consec_bleeding_cycle_DIFF <- NA
+  if (all(is.na(data$cyclenumber_final))) {
+    # do nothing, no complete cycles were tracked
+  } else if (max(data$cyclenumber_final, na.rm = T) == 1) {
+    #only one episode of bleeding reported? leave all the NAs for consec_bleeding_cycle_DIFF and do this:
+    data$cyclelength_flag_sevendays <- NA
+  } else {
+    for (x in 2:max(data$cyclenumber_final, na.rm = T)) {
+      data[!is.na(data$cyclenumber_final) &
+             data$cyclenumber_final == x, "consec_bleeding_cycle_DIFF"] <- data[!is.na(data$cyclenumber_final) &
+                                                                                  data$cyclenumber_final == x &
+                                                                                  data$day == 1, "cyclelength"] - data[!is.na(data$cyclenumber_final) &
+                                                                                                                         data$cyclenumber_final == x - 1 &
+                                                                                                                         data$day == 1, 'cyclelength']
+    }
+    data <- data %>%
+      mutate(cyclelength_flag_sevendays = case_when(
+        abs(consec_bleeding_cycle_DIFF) >= 7 ~ 1,
+        abs(consec_bleeding_cycle_DIFF) < 7 ~ 0,
+        TRUE ~ NA
+      ))
+  }
+  data
+}
+
+perform_staging <- function(data) {
+  data <- data[order(data$bleedingDate), ]
+  data$flag_minus3 <-  NA
+  data$flag_minus3_notes <-  NA
+  data$flag_minus2 <-  NA
+  data$flag_minus2_notes <- NA
+  data$flag_minus1 <-  NA
+  data$flag_plus1a <-  NA
+  data$flag_plus1b <-  NA
+  data$flag_plus1c <-  NA
+  
+  ## assign flags for each stage
+  if (all(is.na(data$cyclenumber_final))) {
+    # then do nothing
+  } else {
+    for (x in 1:max(data$cyclenumber_final, na.rm = T)) {
+      if (is.na(data[!is.na(data$cyclenumber_final) &
+                     data$cyclenumber_final == x &
+                     data$day == 1, "consec_bleeding_cycle_DIFF"])) {
+        # if there's no value for consec_bleeding_cycle_DIFF, then do the following:
+        if (x == 1) {
+          if (max(data$cyclenumber_final, na.rm = T) > 1) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, "flag_minus2_notes"] <- "first cycle recorded"
+          } else if (max(data$cyclenumber_final, na.rm = T) == 1) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, "flag_minus2_notes"] <- "incomplete cycle"
+          }
+          if (max(data[!is.na(data$cyclenumber_final) &
+                       data$cyclenumber_final == x, "day"]) >= 365) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x &
+                   data$day > 365, "flag_plus1b"] <- 1
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x &
+                   data$day <= 365, "flag_plus1a"] <- 1
+          } else if (max(data[!is.na(data$cyclenumber_final) &
+                              data$cyclenumber_final == x, "day"]) >= 60) {
+            if (nrow(data[!is.na(data$cyclenumber_final) &
+                          data$cyclenumber_final == x &
+                          data$bleeding_thatday == 1, ]) > 10 &
+                max(data[!is.na(data$cyclenumber_final) &
+                         data$cyclenumber_final == x, "day"], na.rm = T) <= 70) {
+              data[!is.na(data$cyclenumber_final) &
+                     data$cyclenumber_final == x, "flag_minus2"] <- 1
+            } else {
+              data[!is.na(data$cyclenumber_final) &
+                     data$cyclenumber_final == x, "flag_minus1"] <- 1
+            }
+          } else if (all(is.na(data$cyclelength))) {
+            # exit the loop, can't assign -2 or -3
+          } else if (max(data$cyclenumber_final, na.rm = T) == x) {
+            if (max(data[!is.na(data$cyclenumber_final) &
+                         data$cyclenumber_final == x, ]$day) > 365) {
+              data[!is.na(data$cyclenumber_final) &
+                     !data$cyclenumber_final == x &
+                     data$day > 365, "flag_plus1b"] <- 1
+              data[!is.na(data$cyclenumber_final) &
+                     data$cyclenumber_final == x &
+                     data$day <= 365, "flag_plus1a"] <- 1
+            } else if (max(data[!is.na(data$cyclenumber_final) &
+                                data$cyclenumber_final == x, ]$day) > 60) {
+              data[!is.na(data$cyclenumber_final) &
+                     data$cyclenumber_final == x, 'flag_minus1'] <- 1
+            }
+          } else if (is.na(data[(
+            !is.na(data$cyclenumber_final) &
+            data$cyclenumber_final == x + 1 &
+            data$day == 1
+          ), "cyclelength"])) {
+            # the next cycle is incomplete
+            data[!is.na(data$cyclenumber_final) &
+                   !is.na(data$cyclelength) &
+                   data$cyclenumber_final == x, "flag_minus3"] <- 1
+          } else if (abs(data[(
+            !is.na(data$cyclenumber_final) &
+            !is.na(data$cyclelength) &
+            data$cyclenumber_final == x &
+            data$day == 1
+          ), "cyclelength"] - data[(
+            !is.na(data$cyclenumber_final) &
+            !is.na(data$cyclelength) &
+            data$cyclenumber_final == x + 1 &
+            data$day == 1
+          ), "cyclelength"]) >= 7 &
+          any(data[!is.na(data$cyclenumber_final) &
+                   !is.na(data$cyclelength) &
+                   data$cyclenumber_final == (x + 1) |
+                   (x + 2) |
+                   (x + 3) |
+                   (x + 4) |
+                   (x + 5) |
+                   (x + 6) |
+                   (x + 7) |
+                   (x + 8) |
+                   (x + 9) |
+                   (x + 10) &
+                   data$day == 1, "cyclelength_flag_sevendays"] == 1, na.rm = T)) {
+            # if there are any subsequent cycles...
+            data[!is.na(data$cyclenumber_final) &
+                   !is.na(data$cyclelength) &
+                   data$cyclenumber_final == x, "flag_minus2"] <- 1
+          } else {
+            data[!is.na(data$cyclenumber_final) &
+                   !is.na(data$cyclelength) &
+                   data$cyclenumber_final == x, "flag_minus3"] <- 1
+          }
+        } else if (max(data$cyclenumber_final, na.rm = T) == x) {
+          data[!is.na(data$cyclenumber_final) &
+                 data$cyclenumber_final == x, "flag_minus2_notes"] <- "incomplete cycle"
+          if (max(data[!is.na(data$cyclenumber_final) &
+                       data$cyclenumber_final == x, ]$day) > 365) {
+            data[!is.na(data$cyclenumber_final) &
+                   !data$cyclenumber_final == x &
+                   data$day > 365, "flag_plus1b"] <- 1
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x &
+                   data$day <= 365, "flag_plus1a"] <- 1
+          } else if (max(data[!is.na(data$cyclenumber_final) &
+                              data$cyclenumber_final == x, ]$day) > 60) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, 'flag_minus1'] <- 1
+          }
+        }
+      } else {
+        # there is a value for consec_bleeding_cycle_DIFF
+        if (data[!is.na(data$cyclenumber_final) &
+                 data$cyclenumber_final == x &
+                 data$day == 1, "cyclelength"] >= 365) {
+          # if there are more than 365 days in the xth cycle:
+          if (any(data[!is.na(data$cyclenumber_final) &
+                       data$cyclenumber_final == x, "day"] > 365, na.rm = T)) {
+            # if there is a day > 365, then assign +1b for days > 365 and +1a for days <= 365
+            data[!is.na(data$cyclenumber_final) &
+                   !data$cyclenumber_final == x &
+                   data$day > 365, "flag_plus1b"] <- 1
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x &
+                   data$day <= 365, "flag_plus1a"] <- 1
+          } else {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x &
+                   data$day <= 365, "flag_plus1a"] <- 1
+          }
+        } else if (data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == x &
+                        data$day == 1, "cyclelength"] >= 60) {
+          #if there are more than 60 but less than 365 in the xth cycle:
+          if (nrow(data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == x &
+                        data$bleeding_thatday == 1, ] > 15) &
+              data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x &
+                   data$day == 1, "cyclelength"] <= 75) {
+            #very long bleeding duration? probably not really stage -1
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, 'flag_minus2'] <- 1
+          } else {
+            # then assign -1 for all days in that cyclenumber_final
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, 'flag_minus1'] <- 1
+          }
+        } else if (is.na(data[!is.na(data$cyclenumber_final) &
+                              data$cyclenumber_final == x &
+                              data$day == 1, "cyclelength_flag_sevendays"])) {
+          # does something need to go here???? or maybe we're just accounting for NAs
+        } else if (data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == x &
+                        data$day == 1, "cyclelength_flag_sevendays"] == 1) {
+          if (any(data[!is.na(data$cyclenumber_final) &
+                       data$cyclenumber_final == (x + 1) |
+                       (x + 2) |
+                       (x + 3) |
+                       (x + 4) |
+                       (x + 5) |
+                       (x + 6) |
+                       (x + 7) |
+                       (x + 8) |
+                       (x + 9) |
+                       (x + 10) &
+                       data$day == 1, "cyclelength_flag_sevendays"] == 1, na.rm = T)) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, 'flag_minus2'] <- 1
+          } else {
+            # then assign -3
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, 'flag_minus3'] <- 1
+          }
+          if (max(data$cyclenumber_final, na.rm = T) < (x + 10)) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, "flag_minus3_notes"] <- "fewer than 10 subsequent cycles"
+          }
+        } else if (data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == x &
+                        data$day == 1, "cyclelength_flag_sevendays"] == 0) {
+          data[!is.na(data$cyclenumber_final) &
+                 data$cyclenumber_final == x, 'flag_minus3'] <- 1
+        }
+      }
+    }
+  }
+  # for cases when a pt reports >60 days of amenorrhea before the first bleeding pattern
+  rownum <- which(data$bleeding_thatday == 1, arr.ind = TRUE)[1]
+  data <- data %>%
+    mutate(bleedingDate_int = bleedingDate - lag(bleedingDate)) %>%
+    mutate(bleedingDate_int = as.vector(bleedingDate_int))
+  if (is.na(rownum)) {
+    # do nothing
+  } else if (max(rle(data[1:rownum, ]$bleedingDate_int)$lengths) > 60) {
+    # if there is a reliable report of over 60 days of bleeding, then stage as -1
+    data[1:(rownum - 1), ]$flag_minus1 <- 1
+  } else if (rownum == 1) {
+    #the pt started tracking with a report of bleeding
+    if (!is.na(data[!is.na(data$cyclenumber_initial) &
+                    data$cyclenumber_initial == 1 &
+                    data$day == 1, ]$flag_minus3)) {
+      # first cycle is flagged as -3
+      row_firstcycle <- which(data$cyclenumber_initial == 1, arr.ind = TRUE)[1]
+      data[1:(row_firstcycle - 1), "flag_minus3"] <- 1
+    } else if (!is.na(data[!is.na(data$cyclenumber_initial) &
+                           data$cyclenumber_initial == 1 &
+                           data$day == 1, ]$flag_minus2)) {
+      # first cycle is flagged as -2
+      row_firstcycle <- which(data$cyclenumber_initial == 1, arr.ind = TRUE)[1]
+      data[1:(row_firstcycle - 1), "flag_minus2"] <- 1
+    } else if (!is.na(data[!is.na(data$cyclenumber_initial) &
+                           data$cyclenumber_initial == 1 &
+                           data$day == 1, ]$flag_minus1)) {
+      # first cycle is flagged as -1
+      row_firstcycle <- which(data$cyclenumber_initial == 1, arr.ind = TRUE)[1]
+      data[1:(row_firstcycle - 1), "flag_minus1"] <- 1
+    } else if (!is.na(data[!is.na(data$cyclenumber_initial) &
+                           data$cyclenumber_initial == 1 &
+                           data$day == 1, ]$flag_plus1a)) {
+      #first cycle is flagged as +1a
+      row_firstcycle <- which(data$cyclenumber_initial == 1, arr.ind = TRUE)[1]
+      data[1:(row_firstcycle - 1), "flag_minus1"] <- 1
+    }
+  } else if (all(is.na(data$cyclenumber_final))) {
+    # if no complete cycles are tracked, then do nothing here
+  } else if (abs(max(rle(data[1:rownum, ]$bleedingDate_int)$lengths) - max(data[!is.na(data$cyclenumber_final) &
+                                                                                data$cyclenumber_final == 1, "day"], na.rm = T)) >= 7 &
+             (any(data[!is.na(data$cyclenumber_final) &
+                       (
+                         data$cyclenumber_final == 2 |
+                         data$cyclenumber_final == 3 |
+                         data$cyclenumber_final == 4 |
+                         data$cyclenumber_final == 5
+                       ) &
+                       data$day == 1, "flag_minus2"] == 1, na.rm = T) |
+              any(data[!is.na(data$cyclenumber_final) &
+                       (
+                         data$cyclenumber_final == 2 |
+                         data$cyclenumber_final == 3 |
+                         data$cyclenumber_final == 4 |
+                         data$cyclenumber_final == 5
+                       ) &
+                       data$day == 1, "flag_minus1"] == 1, na.rm = T) |
+              any(data[!is.na(data$cyclenumber_final) &
+                       data$cyclenumber_final == 2 |
+                       3 |
+                       4 |
+                       5 & data$day == 1, "flag_plus1a"] == 1, na.rm = T))) {
+    data[1:(rownum - 1), ]$flag_minus2 <- 1
+  }
+  
+  # for cases when a pt has missing data within a cycle but a very long run of no bleeding
+  row_cycles <- which(
+    data$bleeding_day1 == 1 &
+      data$cyclenumber_initial > 0 &
+      data$cyclenumber_notes == "missing data within this cycle; not counting",
+    arr.ind = TRUE
+  )
+  cycles_missingdata <- as.numeric(data$cyclenumber_initial[row_cycles])
+  # we ID the cyclenumber_initial(s) for the cycle(s) with missing data
+  # then for each of the ID'd cycles, we check the max number of consecutive days before a missing flag is thrown
+  
+  for (x in cycles_missingdata) {
+    if (max(rle(data[data$cyclenumber_initial == x, ]$bleedingDate_int)$lengths) >= 365) {
+      # run of over 365 days: this meets criteria for stage +1a (and then might make it into stage +1b for days > 365)
+      data[which(data$bleeding_day1 == 1 &
+                   data$cyclenumber_initial == x):(which(data$bleeding_day1 == 1 &
+                                                           data$cyclenumber_initial == x) + 364), ]$flag_plus1a <- 1
+      
+      max_run <- max(rle(data[data$cyclenumber_initial == x, ]$bleedingDate_int)$lengths)
+      if (max_run < 730) {
+        data[which(data$bleeding_day1 == 1 &
+                     data$cyclenumber_initial == x) + 365:max_run, ]$flag_plus1b <- 1
+      } else {
+        data[which(data$bleeding_day1 == 1 &
+                     data$cyclenumber_initial == x) + 365:which(data$bleeding_day1 == 1 &
+                                                                  data$cyclenumber_initial == x) + 730, ]$flag_plus1b <- 1
+        data[which(data$bleeding_day1 == 1 &
+                     data$cyclenumber_initial == x) + 730:max_run, ]$flag_plus1c <- 1
+      }
+      
+    } else if (max(rle(data[data$cyclenumber_initial == x, ]$bleedingDate_int)$lengths) >= 60) {
+      # run of over 60 days: this meets criteria for stage -1
+      data[which(data$bleeding_day1 == 1 &
+                   data$cyclenumber_initial == x):(which(data$bleeding_day1 == 1 &
+                                                           data$cyclenumber_initial == x) + (max(data[data$cyclenumber_initial == x, "day"], na.rm = T) -
+                                                                                               1)), ]$flag_minus1 <- 1
+    }
+  }
+  
+  
+  # now rank the flags and assign stages
+  data$STAGE <- NA
+  
+  rownum <- which(data$flag_minus3 == 1, arr.ind = TRUE)[1]
+  if (is.na(rownum)) {
+    
+  } else {
+    data[rownum:nrow(data), "STAGE"] <- 'stage_minus3'
+  }
+  
+  rownum <- which(data$flag_minus2 == 1, arr.ind = TRUE)[1]
+  if (is.na(rownum)) {
+    
+  } else {
+    data[rownum:nrow(data), "STAGE"] <- 'stage_minus2'
+  }
+  
+  rownum <- which(data$flag_minus1 == 1, arr.ind = TRUE)[1]
+  if (is.na(rownum)) {
+    
+  } else {
+    data[rownum:nrow(data), "STAGE"] <- 'stage_minus1'
+  }
+  
+  rownum <- which(data$flag_plus1a == 1, arr.ind = TRUE)[1]
+  if (is.na(rownum)) {
+    
+  } else {
+    data[rownum:nrow(data), "STAGE"] <- 'stage_plus1a'
+    if (nrow(data) - rownum > 365) {
+      cyclenum <- data[rownum, ]$cyclenumber_final
+      data[!is.na(data$cyclenumber_final) &
+             data$cyclenumber_final == cyclenum &
+             data$day > 365, "STAGE"] <- "stage_plus1b"
+    }
+  }
+  
+  rownum <- which(data$flag_plus1b == 1, arr.ind = TRUE)[1]
+  if (is.na(rownum)) {
+    
+  } else {
+    data[rownum:nrow(data), "STAGE"] <- 'stage_plus1b'
+  }
+  
+  rownum <- which(data$flag_plus1c == 1, arr.ind = TRUE)[1]
+  if (is.na(rownum)) {
+    
+  } else {
+    data[rownum:nrow(data), "STAGE"] <- 'stage_plus1c'
+  }
+  
+  # first we ID which cycles are missing data using cyclenumber_initial
+  
+  partial_cycles <- data %>%
+    filter(cyclenumber_notes == "missing data within this cycle; not counting") %>%
+    filter(bleeding_day1 == 1) %>%
+    dplyr::select(cyclenumber_initial) %>%
+    pull()
+  
+  for (x in partial_cycles) {
+    if (length(partial_cycles) == 0) {
+      # then do nothing, no partial cycles
+    } else if (!is.na(data[!is.na(data$cyclenumber_initial) &
+                           data$cyclenumber_initial == x &
+                           data$day == 1, "STAGE"])) {
+      #do nothing
+    } else if (all(is.na(data$STAGE))) {
+      #do nothing
+    } else if (x == 1) {
+      #then pull the stage for the next complete cycle i.e., cyclenumber_final == 1
+      tmp.next <- data[!is.na(data$cyclenumber_final) &
+                         data$cyclenumber_final == 1 &
+                         data$bleeding_day1 == 1, "STAGE"][[1]]
+      data[!is.na(data$cyclenumber_initial) &
+             data$cyclenumber_initial == x, "STAGE"] <- tmp.next
+    } else if (x > 1) {
+      # if it's not the first cycle
+      # if the cycles on either side are unstaged
+      if (any(is.na(data[!is.na(data$cyclenumber_initial) &
+                         (data$cyclenumber_initial == x - 1 |
+                          data$cyclenumber_initial == x + 1) &
+                         data$day == 1, "STAGE"]))) {
+        if (is.na(data[!is.na(data$cyclenumber_initial) &
+                       data$cyclenumber_initial == x - 1 &
+                       data$day == 1, "STAGE"]) &
+            is.na(data[!is.na(data$cyclenumber_initial) &
+                       data$cyclenumber_initial == x + 1 &
+                       data$day == 1, "STAGE"])) {
+          #case: both are unstaged
+          if (all(is.na(data$STAGE))) {
+            # no staging was able to be performed
+            # was any bleeding reported at all? must have if this function is running
+            # and we already checked to see if they met criteria for +1 or -1,
+            # so they're probably somewhere in stage -3:-1 but we really don't know with any certainty where
+            # so we'll just leave it all unassigned.
+          } else if (x >= 3 &
+                     !is.na(data[!is.na(data$cyclenumber_initial) &
+                                 data$cyclenumber_initial == x - 2 &
+                                 data$day == 1, "STAGE"])) {
+            tmp.prior <- data[!is.na(data$cyclenumber_initial) &
+                                data$cyclenumber_initial == x - 2 &
+                                data$day == 1, ]$STAGE
+          } else if (x >= 4 &
+                     !is.na(data[!is.na(data$cyclenumber_initial) &
+                                 data$cyclenumber_initial == x - 3 &
+                                 data$day == 1, "STAGE"])) {
+            tmp.prior <- data[!is.na(data$cyclenumber_initial) &
+                                data$cyclenumber_initial == x - 2 &
+                                data$day == 1, ]$STAGE
+          } else {
+            tmp.prior <- NA
+          }
+          if (all(is.na(data$STAGE))) {
+            # no staging was able to be performed
+            # was any bleeding reported at all? must have if this function is running
+            # and we already checked to see if they met criteria for +1 or -1,
+            # so they're probably somewhere in stage -3:-1 but we really don't know with any certainty where
+            # so we'll just leave it all unassigned.
+          } else if (max(data$cyclenumber_initial, na.rm = T) >= x + 2 &
+                     !is.na(data[!is.na(data$cyclenumber_initial) &
+                                 data$cyclenumber_initial == x + 2 &
+                                 data$day == 1, "STAGE"])) {
+            tmp.next <- data[!is.na(data$cyclenumber_initial) &
+                               data$cyclenumber_initial == x + 2 &
+                               data$day == 1, ]$STAGE
+          } else if (max(data$cyclenumber_initial, na.rm = T) >= x + 3 &
+                     !is.na(data[!is.na(data$cyclenumber_initial) &
+                                 data$cyclenumber_initial == x + 3 &
+                                 data$day == 1, "STAGE"])) {
+            tmp.next <- data[!is.na(data$cyclenumber_initial) &
+                               data$cyclenumber_initial == x + 2 &
+                               data$day == 1, ]$STAGE
+          } else {
+            tmp.next <- NA
+          }
+        } else if (is.na(data[!is.na(data$cyclenumber_initial) &
+                              data$cyclenumber_initial == x - 1 &
+                              data$day == 1, "STAGE"])) {
+          #just the prior one is unstaged
+          tmp.next <- data[!is.na(data$cyclenumber_initial) &
+                             data$cyclenumber_initial == x + 1 &
+                             data$day == 1, ]$STAGE
+          if (x >= 3 &
+              !is.na(data[!is.na(data$cyclenumber_initial) &
+                          data$cyclenumber_initial == x - 2 &
+                          data$day == 1, "STAGE"])) {
+            tmp.prior <- data[!is.na(data$cyclenumber_initial) &
+                                data$cyclenumber_initial == x - 2 &
+                                data$day == 1, "STAGE"]
+          }
+        } else if (is.na(data[!is.na(data$cyclenumber_initial) &
+                              data$cyclenumber_initial == x + 1 &
+                              data$day == 1, "STAGE"])) {
+          #just the subsequent cycle is unstaged
+          tmp.prior <- data[!is.na(data$cyclenumber_initial) &
+                              data$cyclenumber_initial == x - 1 &
+                              data$day == 1, "STAGE"]
+          if (max(data$cyclenumber_initial, na.rm = T) >= x + 2 &
+              !is.na(data[!is.na(data$cyclenumber_initial) &
+                          data$cyclenumber_initial == x + 2 &
+                          data$day == 1, "STAGE"])) {
+            tmp.next <- data[!is.na(data$cyclenumber_initial) &
+                               data$cyclenumber_initial == x + 2 &
+                               data$day == 1, "STAGE"]
+          }
+        }
+      } else {
+        #both cycles on either side are staged
+        tmp.prior <- data[!is.na(data$cyclenumber_initial) &
+                            data$cyclenumber_initial == x - 1 &
+                            data$day == 1, "STAGE"]
+        tmp.next <- data[!is.na(data$cyclenumber_initial) &
+                           data$cyclenumber_initial == x + 1 &
+                           data$day == 1, "STAGE"]
+      }
+      if (is.na(tmp.prior) & is.na(tmp.next)) {
+        data[!is.na(data$cyclenumber_initial) &
+               data$cyclenumber_initial == x, "STAGE"] <- tmp.prior
+      } else if (is.na(tmp.prior)) {
+        # do nothing
+      } else if (is.na(tmp.next)) {
+        data[!is.na(data$cyclenumber_initial) &
+               data$cyclenumber_initial == x, "STAGE"] <- tmp.prior
+      } else if (tmp.prior == tmp.next) {
+        data[!is.na(data$cyclenumber_initial) &
+               data$cyclenumber_initial == x, "STAGE"] <- tmp.next
+      } else {
+        if (tmp.next == "stage_plus1a") {
+          data[!is.na(data$cyclenumber_initial) &
+                 data$cyclenumber_initial == x, "STAGE"] <- tmp.prior
+        } else if (tmp.next == "stage_minus1") {
+          if (tmp.prior == "stage_minus2" | tmp.prior == "stage_minus3") {
+            data[!is.na(data$cyclenumber_initial) &
+                   data$cyclenumber_initial == x, "STAGE"] <- tmp.prior
+          }
+        } else if (tmp.next == "stage_minus2") {
+          if (tmp.prior == "stage_minus3") {
+            data[!is.na(data$cyclenumber_initial) &
+                   data$cyclenumber_initial == x, "STAGE"] <- tmp.prior
+          }
+        } else if (tmp.next == "stage_minus3") {
+          data[!is.na(data$cyclenumber_initial) &
+                 data$cyclenumber_initial == x, "STAGE"] <- "stage_minus3"
+        }
+      }
+    }
+  }
+  
+  
+  
+  incomplete_cycles <- data %>%
+    filter(
+      flag_minus2_notes == "incomplete cycle" |
+        flag_minus2_notes == "incomplete cycle (still tracking)"
+    ) %>%
+    filter(bleeding_day1 == 1) %>%
+    dplyr::select(cyclenumber_final) %>%
+    pull()
+  
+  for (x in incomplete_cycles) {
+    if (length(incomplete_cycles) == 0) {
+      # then do nothing
+    } else if (all(is.na(data$STAGE))) {
+      # then also do nothing
+    } else if (!is.na(data[!is.na(data$cyclenumber_initial) &
+                           data$cyclenumber_initial == x &
+                           data$day == 1, "STAGE"])) {
+      # also do nothing
+    } else if (any(data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == x, "day"] >= 365)) {
+      data[!is.na(data$cyclenumber_final) &
+             data$cyclenumber_final == x &
+             data$day > 365, "STAGE"] <- "stage_plus1b"
+      data[!is.na(data$cyclenumber_final) &
+             data$cyclenumber_final == x &
+             data$day >= 1 &
+             data$day <= 365, "STAGE"] <- "stage_plus1a"
+    } else if (is.na(data[!is.na(data$cyclenumber_final) &
+                          data$cyclenumber_final == x - 1, "STAGE"][1, ])) {
+      if (any(data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, "day"] >= 60)) {
+        data[!is.na(data$cyclenumber_final) &
+               data$cyclenumber_final == x, "STAGE"] <- "stage_minus1"
+      }
+    } else if (data[!is.na(data$cyclenumber_final) &
+                    data$cyclenumber_final == x - 1, "STAGE"][1, ] == "stage_minus3") {
+      if (any(data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, "day"] >= 60)) {
+        data[!is.na(data$cyclenumber_final) &
+               data$cyclenumber_final == x, "STAGE"] <- "stage_minus1"
+      } else if (max(data[!is.na(data$cyclenumber_final) &
+                          data$cyclenumber_final == x, "day"]) - max(data[!is.na(data$cyclenumber_final) &
+                                                                          data$cyclenumber_final == x - 1, "day"]) > 7) {
+        data[!is.na(data$cyclenumber_final) &
+               data$cyclenumber_final == x, "STAGE"] <- "stage_minus2"
+      } else {
+        data[!is.na(data$cyclenumber_final) &
+               data$cyclenumber_final == x, "STAGE"] <- "stage_minus3"
+      }
+    } else if (data[!is.na(data$cyclenumber_final) &
+                    data$cyclenumber_final == x - 1, "STAGE"][1, ] == "stage_minus2") {
+      if (any(data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == x, "day"] >= 60)) {
+        data[!is.na(data$cyclenumber_final) &
+               data$cyclenumber_final == x, "STAGE"] <- "stage_minus1"
+      } else {
+        data[!is.na(data$cyclenumber_final) &
+               data$cyclenumber_final == x, "STAGE"] <- "stage_minus2"
+      }
+    } else if (data[!is.na(data$cyclenumber_final) &
+                    data$cyclenumber_final == x - 1, "STAGE"][1, ] == "stage_minus1") {
+      data[!is.na(data$cyclenumber_final) &
+             data$cyclenumber_final == x, "STAGE"] <- "stage_minus1"
+    }
+  }
+  
+  
+  if (is.na(data[!is.na(data$cyclenumber_final) &
+                 data$cyclenumber_final == 1, "STAGE"][1, ])) {
+    #if the first cycle is unstaged
+    if (all(is.na(data$STAGE))) {
+      # then do nothing
+    } else if (any(!is.na(data$cyclenumber_final))) {
+      if (max(data$cyclenumber_final, na.rm = T) > 1) {
+        if (data[!is.na(data$cyclenumber_final) &
+                 data$cyclenumber_final == 2, "STAGE"][1, ] == "stage_plus1a") {
+          if (data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1 &
+                   data$day == 1, "cyclelength"] < 365) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1, "STAGE"] <- "stage_minus1"
+          }
+        } else if (data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == 2, "STAGE"][1, ] == "stage_minus1") {
+          if (data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1 &
+                   data$day == 1, "cyclelength"] < 60) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1, "STAGE"] <- "stage_minus2"
+          } else if (data[!is.na(data$cyclenumber_final) &
+                          data$cyclenumber_final == 1 &
+                          data$day == 1, "cyclelength"] >= 60) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1, "STAGE"] <- "stage_minus1"
+          }
+        } else if (data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == 2, "STAGE"][1, ] == "stage_minus2") {
+          if (abs(data[!is.na(data$cyclenumber_final) &
+                       data$cyclenumber_final == 1 &
+                       data$day == 1, "cyclelength"] - data[!is.na(data$cyclenumber_final) &
+                                                            data$cyclenumber_final == 2 &
+                                                            data$day == 1, "cyclelength"]) >= 7 &
+              any(data[!is.na(data$cyclenumber_final) &
+                       !is.na(data$cyclelength) &
+                       data$cyclenumber_final == (x + 1) |
+                       (x + 2) |
+                       (x + 3) |
+                       (x + 4) |
+                       (x + 5) |
+                       (x + 6) |
+                       (x + 7) |
+                       (x + 8) |
+                       (x + 9) |
+                       (x + 10) &
+                       data$day == 1, "cyclelength_flag_sevendays"] == 1, na.rm = T)) {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1, "STAGE"] <- "stage_minus2"
+          } else {
+            data[!is.na(data$cyclenumber_final) &
+                   data$cyclenumber_final == 1, "STAGE"] <- "stage_minus3"
+          }
+        } else if (data[!is.na(data$cyclenumber_final) &
+                        data$cyclenumber_final == 2, "STAGE"][1, ] == "stage_minus3") {
+          data[!is.na(data$cyclenumber_final) &
+                 data$cyclenumber_final == 1, "STAGE"] <- "stage_minus3"
+        }
+      }
+    }
+  }
+  
+  # long unstaged head of the dataframe?
+  
+  rownum <- which(!is.na(data$STAGE), arr.ind = TRUE)[1]
+  #pull that stage assignment
+  first_stage <- data[rownum, ]$STAGE
+  if (is.na(rownum)) {
+    #do nothing
+  } else if (rownum == 1) {
+    if (first_stage == "stage_plus1a") {
+      data[1, "STAGE"] <- "stage_minus1"
+    } else {
+      data[1, "STAGE"] <- first_stage
+    }
+  } else if (first_stage == "stage_minus3" |
+             first_stage == "stage_minus2") {
+    data[1:(rownum - 1), "STAGE"] <- first_stage
+  } else if (first_stage == "stage_minus1") {
+    if (max(data[data$cyclenumber_final == 1, ]$day, na.rm = T) > 300) {
+      data[1:(rownum - 1), "STAGE"] <- "stage_minus2"
+    } else {
+      data[1:(rownum - 1), "STAGE"] <- first_stage
+    }
+  } else if (first_stage == "stage_plus1a") {
+    data[1:(rownum - 1), "STAGE"] <- "stage_minus1"
+  } else if (first_stage == "stage_plus1_uncertain_substage") {
+    data[1:(rownum - 1), "STAGE"] <- "stage_plus1_uncertain_substage"
+  }
+  data
+}
+
+
+
+
+id_initial_amenorrhea_no_bleeding <- function(data) {
+  data <- data %>%
+    mutate(bleedingDate_int = bleedingDate - lag(bleedingDate)) %>%
+    mutate(bleedingDate_int = as.vector(bleedingDate_int))
+  if (max(rle(data$bleedingDate_int)$lengths) >= 365) {
+    data$STAGE <- NA
+    data$STAGE <- "stage_plus1_uncertain_substage"
+  } else if (max(rle(data$bleedingDate_int)$lengths) > 60) {
+    data$STAGE <- NA
+    data[sum(rle(data$bleedingDate_int)$length[1:which(rle(data$bleedingDate_int)$length == max(rle(data$bleedingDate_int)$length)) -
+                                                 1]):nrow(data), ]$STAGE <- "stage_minus1"
+  } else {
+    data$STAGE <- NA
+  }
+  data
+}
+
+extract_stage <- function(data, date_interest) {
+  if (date_interest %in% data$bleedingDate) {
+    data[data$bleedingDate == as.Date(date_interest), "STAGE"]
+  } else {
+    #if the date doesn't occur in the dataframe, return NA for stage
+    NA
+  }
+}
+
+extract_visit_dates <- function(data) {
+  # gather the visit dates
+  V1_date <- data$V1[1]
+  V2_date <- data$V2[1]
+  V3_date <- data$V3[1]
+  V4_date <- if ("V4" %in% colnames(data)) {
+    data$V4[1]
+  } else {
+    NA
+  }
+  
+  #extract the stage
+  if (!is.na(V1_date)) {
+    if (V1_date %in% data$bleedingDate) {
+      V1_stage <- extract_stage(data, date_interest = as.Date(V1_date))
+    } else {
+      closest.date <- data$bleedingDate[which.min(abs(data$bleedingDate - V1_date))]
+      V1_stage <- extract_stage(data, date_interest = as.Date(closest.date))
+    }
+    if (!is.na(V2_date)) {
+      if (V2_date %in% data$bleedingDate) {
+        V2_stage <- extract_stage(data, date_interest = as.Date(V2_date))
+      } else {
+        closest.date <- data$bleedingDate[which.min(abs(data$bleedingDate - V2_date))]
+        V2_stage <- extract_stage(data, date_interest = as.Date(closest.date))
+      }
+      if (!is.na(V3_date)) {
+        if (V3_date %in% data$bleedingDate) {
+          V3_stage <- extract_stage(data, date_interest = as.Date(V3_date))
+        } else {
+          closest.date <- data$bleedingDate[which.min(abs(data$bleedingDate - V3_date))]
+          V3_stage <- extract_stage(data, date_interest = as.Date(closest.date))
+        }
+        if (!is.na(V4_date)) {
+          if (V4_date %in% data$bleedingDate) {
+            V2_stage <- extract_stage(data, date_interest = as.Date(V4_date))
+          } else {
+            closest.date <- data$bleedingDate[which.min(abs(data$bleedingDate - V4_date))]
+            V4_stage <- extract_stage(data, date_interest = as.Date(closest.date))
+          }
+        } else {
+          V4_stage <- NA
+        }
+      } else {
+        V3_stage <- NA
+        V4_stage <- NA
+      }
+    } else {
+      V2_stage <- NA
+      V3_stage <- NA
+      V4_stage <- NA
+    }
+  } else {
+    V1_stage <- NA
+    V2_stage <- NA
+    V3_stage <- NA
+    V4_stage <- NA
+  }
+  
+  #gather the number of months they have been tracking
+  start <- data$bleedingDate[1]
+  end <- data$bleedingDate[nrow(data)]
+  diff <- as.vector(difftime(end, start, units = "weeks"))
+  weeks_enrolled <- round(diff, 0)
+  completion_rate <- (actual_weeks_tracked / weeks_enrolled)
+  
+  #put it all together
+  entry <- data.frame(
+    cbind(
+      data$SID[1],
+      V1_stage,
+      V2_stage,
+      V3_stage,
+      V4_stage,
+      weeks_enrolled,
+      actual_weeks_tracked,
+      completion_rate
+    )
+  )
+  colnames(entry) <- c(
+    "SID",
+    "V1_stage",
+    "V2_stage",
+    "V3_stage",
+    "V4_stage",
+    "weeks_enrolled",
+    "actual_weeks_tracked",
+    "completion_rate"
+  )
+  
+  #append to extracted_stages dataframe
+  if (entry$SID %in% extracted_stages$SID) {
+    #if that SID is already in extracted_stages, then overwrite
+    extracted_stages <- extracted_stages %>%
+      slice(-which(extracted_stages$SID == entry$SID))
+    extracted_stages <- rbind(extracted_stages, entry)
+  } else {
+    extracted_stages <- rbind(extracted_stages, entry)
+  }
+  
+  
+  if (any(extracted_stages$SID == 0)) {
+    row_to_drop <-  which(extracted_stages$SID == 0)
+    extracted_stages <- extracted_stages %>%
+      slice(-row_to_drop)
+  }
+  
+  extracted_stages
+}
+```
+
+## generate list of unique SIDs in allcycle
+```{r}
+SID <- unique(allcycle$SID)
+
+staged <- rep(0,length(SID))
+
+checklist <- cbind(SID,staged)
+checklist <- data.frame(checklist)
+
+#create function to update the checklist
+update_checklist <- function(x, df) {
+  df[df$SID == x,"staged"] <- 1
+  df
+ }
+```
+## create wrapper for coding steps
+```{r}
+staging_wrapper <- function(data) {
+  if (nrow(data)< 6) {
+    print(paste0(data[1,"SID"]," has recorded less than six weeks of bleeding pattern data. No staging will be attempted."))
+    data <- convert_weekly_to_daily(data)
+    data <- generate_bleeding_dates(data)
+    data$cyclelength <- NA
+    data$cyclenumber_final <- NA
+    data$consec_bleeding_cycle_DIFF <- NA
+    data$STAGE <- NA
+    data
+  } else {
+    data <- convert_weekly_to_daily(data)
+    data <- generate_bleeding_dates(data)
+    if (all(data$bleeding_thatday == 0)) {
+      print(paste0(data[1,"SID"]," did not report any bleeding during tracking period."))
+      data <- id_initial_amenorrhea_no_bleeding(data)
+    } else {
+      data <- id_bleeding_start(data)
+      data <- count_days(data)
+      data <- count_bleeding_cycles(data)
+      data <- calc_cycle_length(data)
+      if (all(is.na(data$cyclelength)) & all(is.na(data$bleeding_thatday))) {
+        print(paste0(data[1,"SID"], ": no bleeding cycles reported."))
+        data
+      } else {
+        data <- compare_cycle_lengths(data)
+        data <- perform_staging(data)
+        data
+      }}
+  }
+  
+  
+}
+```
+
+## create functions for visualizations
+```{r}
+fig_bleeding <- function(data) {
+  ggplot(data, aes(x = bleedingDate, y = bleeding_thatday)) +
+    geom_col(fill = "#ee4134", color = "#ee4134") +
+    scale_x_date(date_breaks = "2 months", date_labels =  "%b %Y") +
+    scale_y_continuous(breaks = NULL,
+                       labels = NULL,
+                       limits = c(0, 1.05)) +
+    xlab("Date") +
+    ylab("Reported menstrual bleeding") +
+    theme_bw() +
+    theme(axis.text.x = element_text(size = 6)) +
+    ggtitle("A. Bleeding patterns")
+  ggsave(
+    paste0("figures/", freezedate, "_freeze/", data[[1, 1]], '_pattern.tiff'),
+    height = 3,
+    width = 6,
+    dpi = 300
+  )
+}
+
+fig_cyclelength <- function(data) {
+  ggplot(
+    data %>% filter(bleeding_day1 == 1) %>% filter(!is.na(cyclenumber_final)) %>% filter(!is.na(cyclelength)),
+    aes(x = cyclenumber_final, y = cyclelength)
+  ) +
+    geom_col(fill = '#74aea4') +
+    ylab("Cycle length (days)") +
+    xlab("Cycle number") +
+    theme_bw() +
+    theme(axis.text.x = element_text(size = 8)) +
+    ggtitle("B. Bleeding cycle lengths")
+  ggsave(
+    paste0(
+      "figures/",
+      freezedate,
+      "_freeze/",
+      data[[1, 1]],
+      '_cyclelengths.tiff'
+    ),
+    height = 3,
+    width = 6,
+    dpi = 300
+  )
+}
+
+
+fig_cyclelength_DIFF <- function(data) {
+  ggplot(
+    data %>% filter(bleeding_day1 == 1) %>% filter(!is.na(cyclenumber_final)) %>% filter(!is.na(consec_bleeding_cycle_DIFF)),
+    aes(x = cyclenumber_final, y = consec_bleeding_cycle_DIFF)
+  ) +
+    geom_rect(
+      aes(
+        xmin = -Inf,
+        xmax = Inf,
+        ymin = -7,
+        ymax = 7
+      ),
+      fill = "azure2",
+      alpha = 0.2
+    ) +
+    geom_hline(
+      yintercept = 7,
+      linetype = 'longdash',
+      alpha = 0.5,
+      linewidth = .3
+    ) +
+    geom_hline(
+      yintercept = -7,
+      linetype = 'longdash',
+      alpha = 0.5,
+      linewidth = .3
+    ) +
+    geom_col(fill = '#ffad37') +
+    geom_text(aes(label = consec_bleeding_cycle_DIFF),
+              size = 2,
+              vjust = -0.2) +
+    xlab("Cycle number") +
+    ylab("Difference in cycle length (days)") +
+    theme_bw() +
+    theme(axis.text.x = element_text(size = 8)) +
+    ggtitle("C. Differences in consecutive bleeding cycle lengths")
+  ggsave(
+    paste0(
+      "figures/",
+      freezedate,
+      "_freeze/",
+      data[[1, 1]],
+      '_cyclelengths_DIFF.tiff'
+    ),
+    height = 3,
+    width = 6,
+    dpi = 300
+  )
+}
+
+fig_stages <- function(data) {
+  data$STAGE <- factor(
+    data$STAGE,
+    ordered = T,
+    levels = c(
+      "stage_minus3",
+      "stage_minus2",
+      "stage_minus1",
+      "stage_plus1a",
+      "stage_plus1b",
+      "stage_plus1c"
+    )
+  )
+  stage_colors <- c(
+    "stage_minus3" = "#001F54",
+    "stage_minus2" = "#1282A2",
+    "stage_minus1" = "#7CA2B1",
+    "stage_plus1a" = "#D0E3CC",
+    "stage_plus1b" = "#E5C2C0",
+    "stage_plus1c" = "#DD7596"
+  )
+
+  ggplot(data, aes(x = bleedingDate, y = bleeding_thatday)) +
+    geom_rect(
+      aes(
+        xmin = bleedingDate,
+        xmax = dplyr::lead(bleedingDate),
+        ymin = -Inf,
+        ymax = Inf,
+        fill = STAGE
+      ),
+      alpha = 0.4
+    ) +
+    scale_fill_manual(
+      values = stage_colors,
+      breaks = c(
+        "stage_minus3",
+        "stage_minus2",
+        "stage_minus1",
+        "stage_plus1a",
+        "stage_plus1b",
+        "stage_plus1c"
+      ),
+      labels = c(
+        "Stage -3",
+        "Stage -2",
+        "Stage -1",
+        "Stage +1a",
+        "Stage +1b",
+        "Stage +1c"
+      )
+    ) +
+    xlab("Date") +
+    ylab("Reported menstrual bleeding") +
+    labs(fill = "STRAW+10 Stage") +
+    geom_col(fill = "#ee4134", color = "#ee4134") +
+    geom_point(aes(x = V1, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V1, y = 0.045, label = "V1"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    geom_point(aes(x = V2, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V2, y = 0.045, label = "V2"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    geom_point(aes(x = V3, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V3, y = 0.045, label = "V3"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    geom_point(aes(x = V4, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V4, y = 0.045, label = "V4"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    scale_x_date(date_breaks = "3 months", date_labels =  "%b %Y") +
+    scale_y_continuous(breaks = NULL,
+                       labels = NULL,
+                       limits = c(0, 1.05)) +
+    theme_bw() +
+    theme(axis.text.x = element_text(size = 6)) +
+    ggtitle("D. Bleeding pattern with STRAW+10 stages")
+  ggsave(
+    paste0(
+      "figures/",
+      freezedate,
+      "_freeze/",
+      data[[1, 1]],
+      '_pattern_stages.tiff'
+    ),
+    height = 3,
+    width = 6,
+    dpi = 300
+  )
+}
+
+
+fig_nobleeding <- function(data) {
+  stage_colors <- c(
+    "stage_plus1_uncertain_substage" = "#D3D3D3",
+    "stage_minus3" = "#001F54",
+    "stage_minus2" = "#1282A2",
+    "stage_minus1" = "#7CA2B1",
+    "stage_plus1a" = "#D0E3CC",
+    "stage_plus1b" = "#E5C2C0",
+    "stage_plus1c" = "#DD7596"
+  )
+  ggplot(data, aes(x = bleedingDate, y = bleeding_thatday)) +
+    geom_rect(
+      aes(
+        xmin = bleedingDate,
+        xmax = dplyr::lead(bleedingDate),
+        ymin = -Inf,
+        ymax = Inf,
+        fill = STAGE
+      ),
+      alpha = 0.4
+    ) +
+    scale_fill_manual(
+      values = stage_colors,
+      breaks = c(
+        "stage_minus3",
+        "stage_minus2",
+        "stage_minus1",
+        "stage_plus1a",
+        "stage_plus1b",
+        "stage_plus1c",
+        "stage_plus1_uncertain_substage"
+      ),
+      labels = c(
+        "Stage -3",
+        "Stage -2",
+        "Stage -1",
+        "Stage +1a",
+        "Stage +1b",
+        "Stage +1c",
+        "Stage +1 - uncertain substage"
+      )
+    ) +
+    xlab("Date") +
+    ylab("Reported menstrual bleeding") +
+    labs(fill = "STRAW+10 Stage") +
+    geom_col(color = "#ee4134") +
+    geom_point(aes(x = V1, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V1, y = 0.045, label = "V1"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    geom_point(aes(x = V2, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V2, y = 0.045, label = "V2"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    geom_point(aes(x = V3, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V3, y = 0.045, label = "V3"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    geom_point(aes(x = V4, y = 0.018), shape = 6, size = 1) +
+    geom_label(
+      aes(x = V4, y = 0.045, label = "V4"),
+      size = 2.25,
+      vjust = 1,
+      nudge_y = 0.05
+    ) +
+    scale_x_date(date_breaks = "3 months", date_labels =  "%b %Y") +
+    scale_y_continuous(breaks = NULL,
+                       labels = NULL,
+                       limits = c(0, 1.05)) +
+    theme_bw() +
+    theme(axis.text.x = element_text(size = 6)) +
+    ggtitle("A. Visit dates and estimated stage")
+  ggsave(
+    paste0(
+      "figures/",
+      freezedate,
+      "_freeze/",
+      data[[1, 1]],
+      '_no_bleeding.tiff'
+    ),
+    height = 3,
+    width = 6,
+    dpi = 300
+  )
+}
+  
+```
+## create wrapper for visualization functions
+```{r}
+fig_wrapper <- function(data){
+  if (all(data$bleeding_thatday == 0)) {
+    print(paste0(data[1,"SID"]," did not report any bleeding during tracking period; possibly stage -1, +1a or +1b. check redcap for last menstrual period reported during the enrollment call. an alternative figure will be made."))
+    fig_nobleeding(data)
+  } else if (all(is.na(data$STAGE))) {
+    fig_bleeding(data)
+  } else {
+    fig_bleeding(data)
+    fig_cyclelength(data)
+    fig_cyclelength_DIFF(data)
+    fig_stages(data)
+  }}
+
+```
+
+# Perform staging
+```{r example}
+data_101 <- filter_SID(101, allcycle)
+# extract the data for the SID (subject ID) of interest
+
+##### data cleaning ####
+#### a. ID duplicates ####
+check_duplicates(data_101)
+
+# if there are duplicates,
+# remove duplicates
+which(data_1015$dup_flag == TRUE)
+# inspect the duplicate entries and select the rows to scrub (uncomment the folowing two lines)
+# data_101 <- data_101 %>%
+#   slice(insert row num here, i.e., -23, -87)
+
+#### b. check to see if responses are on Wednesdays ####
+# note: survey was sent every Wednesday
+as_tibble(check_wednesdays(data_101) ) %>% 
+  mutate(which_day = weekdays(EndDate_date), .after = Wednesday)
+# if there are non-Wednesday responses,
+# uncomment the following lines and adapt:
+# weekdays(as.Date({survey as a string, e.g., "2025-09-05"}))
+# # check to see if it was completed on the Wednesday prior
+# data_101 %>%
+#   filter(EndDate_date == "{Wedneday date prior to survey date, "2025-09-03"})
+# # if no survey was recorded that Wednesday, then correct the date
+# data_101[data_101$EndDate_date == "2025-09-05", "EndDate_date"] <- as.Date("2025-09-03")
+
+# # repeat for as many non-Wednesday responses as needed. 
+
+# # if the participant completed it the Wednesday prior, then drop the subsequent non-Wednesday response
+# data_101 <- data_101 %>%
+#   filter(EndDate_date != as.Date("2025-08-07"))
+
+#### c. check for missing surveys ####
+check_missing(data_101)
+
+### mark the weeks with missing data for the previous week, for censoring later ###
+data_101 <- mark_missing(data_101)
+actual_weeks_tracked <- count_weeks(data_101)
+
+#### part 2: coding steps ####
+data_101 <- staging_wrapper(data_101)
+
+#### part 3. figures ####
+fig_wrapper(data_101)
+
+#### part 4. extract stages for visit dates ####
+extracted_stages <- extract_visit_dates(data_101)
+checklist <- update_checklist(101, checklist)
+```
+
