@@ -27,12 +27,31 @@ visit_file <- "{your file name}"
 
 ## how many visits?
 num_visits <- 4
+
+## when was the trackign data exported?
+freezedate <- "{date the data was exported/frozen, e.g., 2025.07.01}"
 ```
 
 ## Import the data
 ```{r import data}
 tracking_data <- read.csv(paste0("./data/",tracking_file), header = T, check.names = T)
 visits <- read.csv(paste0("./data/",visit_file), header = T, check.names = T)
+
+output_dir <- file.path("figures", paste0(freezedate,"_freeze"))
+if (!dir.exists(output_dir)){
+  dir.create(output_dir)
+  } else {
+    print("Dir already exists!")
+  }
+
+allcycle <- Merge(tracking_file,visit_file, id = ~ SID)
+
+#this code flags duplicates
+allcycle <- allcycle %>%
+  group_by(EndDate_date, SID) %>%
+  mutate(dup_flag = n() > 1, .after = EndDate_date) %>%
+  ungroup()
+
 ```
 
 ## Prep an empty dataframe
