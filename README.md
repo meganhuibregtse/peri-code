@@ -16,19 +16,18 @@ Create the following directories within peri_code:
 
 ### Step 2. Export your data  
 Export your prospective menstrual cycle pattern data as a csv. Save in peri_code/data.  
-Export visit dates as a csv. Save in peri_code/data.  
+Export visit dates (i.e., the dates participants completed data collection visit) as a csv. Save in peri_code/data.  
 
 ### Step 3. Preparation 
 Open peri_code.Rmd. 
 Assumptions about the data (correct your data or adapt the code before proceeding if your data doesn't meet these):  
 - There is a column "SID" for the subject ID number.  
-- There is a column called EndDate_date that corresponds to the day the subject completed the survey. In our case it was on a Wednesday.
+- There is a column called "EndDate_date" that corresponds to the day the subject completed the bleeding data survey. In our case, the surveys were distributed every Wednesday.  
 - There is a column "bleeding_YN" that indicates if any bleeding was reported for that week (1 = yes, 0 = no)  
-- There are columns "bleeding_days_1" through "bleeding_days_7" that correspond to bleeding reported the day before (Tuesday; bleeding_days_1) through the prior Wednesday (bleeding_days_7). A value of 1 in any of these columns indicate that bleeding was experience that day.
-- Your visit dates are recorded in columns called "V1," "V2," "V3," etc.  
-
+- There are columns "bleeding_days_1" through "bleeding_days_7" that correspond to bleeding reported the day before (Tuesday; bleeding_days_1) through the prior Wednesday (bleeding_days_7). A value of 1 in any of these columns indicate that bleeding was reported on that day.  
+- Your visit dates (i.e., the dates participants completed data collection visit) are recorded in columns called "V1," "V2," "V3," etc.  
 Enter/update your file names and the freeze data in the import data chunk.  
-**Run all chunks before the example chunk.**
+**Run all chunks before the example chunk.**  
 
 ### Step 4. Perform staging and generate figures  
 Copy and paste the example chunk.  
