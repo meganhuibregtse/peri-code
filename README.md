@@ -31,7 +31,7 @@ Enter/update your file names and the freeze data in the import data chunk.
 
 ### Step 4. Perform staging and generate figures  
 Copy and paste the example chunk.  
-Update the chunk to perform staging for your first participant (i.e., change the 101 throughout the chunk to whatever your participant's SID is).  
+Update the chunk to perform staging for your first participant (i.e., change the 101 throughout the chunk to the SID of interest).  
 Update the chunk title to the SID of interest.  
 **Run the `filter_SID` and the `check_duplicates` lines.**  
 If any duplicates are idenitified, remove them using the template code provided.  
