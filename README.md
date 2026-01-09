@@ -15,8 +15,8 @@ Create the following directories within peri_code:
 - pipeline_derivatives  
 
 ### Step 2. Export your data  
-Export your prospective menstrual cycle pattern data as a csv. Save in peri_code/data.  
-Export visit dates (i.e., the dates participants completed data collection visit) as a csv. Save in peri_code/data.  
+Export your prospective menstrual cycle pattern data as a csv. Save in *peri_code/data*.  
+Export visit dates (i.e., the dates participants completed data collection visit) as a csv. Save in *peri_code/data*.  
 
 ### Step 3. Preparation 
 Open peri_code.Rmd. 
@@ -36,11 +36,11 @@ Update the chunk title to the SID of interest.
 **Run the `filter_SID` and the `check_duplicates` lines.**  
 If any duplicates are idenitified, remove them using the template code provided.  
 Once duplicates have been dealt with, **run the remaining lines of code (part 1b thorugh part 4).**  
-Figures for this SID will be generated and saved to the the figures directory.   
+Figures for this SID will be generated and saved to the the *figures* directory.   
 
 ### Step 5. Export the data  
 Add QC notes, if applicable. Some QC notes will be automatically generated.  
-**Run this chunk.** The exported csv will be saved to the pipeline_derivatives directory with the freeze date and today's date in the filename.   
+**Run this chunk.** The exported csv will be saved to the *pipeline_derivatives* directory with the freeze date (i.e., the date the raw data was exported) and today's date in the filename.   
 
 
 
