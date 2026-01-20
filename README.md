@@ -3,7 +3,9 @@
 Contact: Megan Huibregtse, PhD (mhuibreg@illinois.edu)
 
 ## Overview
-This code was written to apply [STRAW+10 stages](https://pmc.ncbi.nlm.nih.gov/articles/PMC3319184/) to prospectively tracked menstrual bleeding data in a longitudinal cohort study of perimenopausal women.   
+This software was written to apply [STRAW+10 stages](https://pmc.ncbi.nlm.nih.gov/articles/PMC3319184/) to prospectively tracked menstrual bleeding data in a longitudinal cohort study of perimenopausal women.  
+### Development  
+This software was developed by Dr. Megan Huibregtse while a postdoctoral fellow at the Grady Trauma Project under the supervision of Dr. Jennifer S. Stevens and Dr. Vasiliki Michopoulos. Development was supported by R01MH128244 (MPIs: Michoupoulos and Stevens) and F32MH134528 (PI: Huibregtse).
 
 ## User guide
 ### Step 1. File/directory set up
