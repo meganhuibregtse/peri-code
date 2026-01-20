@@ -4,8 +4,8 @@ Contact: Megan Huibregtse, PhD (mhuibreg@illinois.edu)
 
 ## Overview
 This software was written to apply [STRAW+10 stages](https://pmc.ncbi.nlm.nih.gov/articles/PMC3319184/) to prospectively tracked menstrual bleeding data in a longitudinal cohort study of perimenopausal women.  
-### Development  
-This software was developed by Dr. Megan Huibregtse while a postdoctoral fellow at the Grady Trauma Project under the supervision of Dr. Jennifer S. Stevens and Dr. Vasiliki Michopoulos. Development was supported by R01MH128244 (MPIs: Michoupoulos and Stevens) and F32MH134528 (PI: Huibregtse).
+**Development**: This software was developed by Dr. Megan Huibregtse while a postdoctoral fellow at the Grady Trauma Project under the supervision of Dr. Jennifer S. Stevens and Dr. Vasiliki Michopoulos. Development was supported by R01MH128244 (MPIs: Michoupoulos and Stevens) and F32MH134528 (PI: Huibregtse).  
+**Citation**: If you use this software, please cite this article: Huibregtse, M. E., Taylor, L., Prochaska, T., Arnold, A. R., Epperson, C. N., Chahine, E. B., Smith, A. K., Powers, A., Michopoulos, V., & Stevens, J. S. (2026). Considerations and practical recommendations for identifying perimenopause in longitudinal research. *Psychoneuroendocrinology*, 107748. [https://doi.org/10.1016/j.psyneuen.2026.107748](https://doi.org/10.1016/j.psyneuen.2026.107748)
 
 ## User guide
 ### Step 1. File/directory set up
